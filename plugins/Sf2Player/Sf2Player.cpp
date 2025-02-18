@@ -121,14 +121,8 @@ struct Sf2PluginData
 
 
 
-// Static map of current sfonts
-QMap<QString, Sf2Font*> Sf2Instrument::s_fonts;
-QMutex Sf2Instrument::s_fontsMutex;
-
-
-
 Sf2Instrument::Sf2Instrument( InstrumentTrack * _instrument_track ) :
-	Instrument( _instrument_track, &sf2player_plugin_descriptor ),
+	Instrument(_instrument_track, &sf2player_plugin_descriptor, nullptr, Flag::IsSingleStreamed),
 	m_srcState( nullptr ),
 	m_synth(nullptr),
 	m_font( nullptr ),
@@ -142,14 +136,14 @@ Sf2Instrument::Sf2Instrument( InstrumentTrack * _instrument_track ) :
 	m_gain( 1.0f, 0.0f, 5.0f, 0.01f, this, tr( "Gain" ) ),
 	m_reverbOn( false, this, tr( "Reverb" ) ),
 	m_reverbRoomSize( FLUID_REVERB_DEFAULT_ROOMSIZE, 0, 1.0, 0.01f, this, tr( "Reverb room size" ) ),
-	m_reverbDamping( FLUID_REVERB_DEFAULT_DAMP, 0, 1.0, 0.01, this, tr( "Reverb damping" ) ),
+	m_reverbDamping(FLUID_REVERB_DEFAULT_DAMP, 0, 1.f, 0.01f, this, tr("Reverb damping")),
 	m_reverbWidth( FLUID_REVERB_DEFAULT_WIDTH, 0, 1.0, 0.01f, this, tr( "Reverb width" ) ),
 	m_reverbLevel( FLUID_REVERB_DEFAULT_LEVEL, 0, 1.0, 0.01f, this, tr( "Reverb level" ) ),
 	m_chorusOn( false, this, tr( "Chorus" ) ),
 	m_chorusNum( FLUID_CHORUS_DEFAULT_N, 0, 10.0, 1.0, this, tr( "Chorus voices" ) ),
-	m_chorusLevel( FLUID_CHORUS_DEFAULT_LEVEL, 0, 10.0, 0.01, this, tr( "Chorus level" ) ),
-	m_chorusSpeed( FLUID_CHORUS_DEFAULT_SPEED, 0.29, 5.0, 0.01, this, tr( "Chorus speed" ) ),
-	m_chorusDepth( FLUID_CHORUS_DEFAULT_DEPTH, 0, 46.0, 0.05, this, tr( "Chorus depth" ) )
+	m_chorusLevel(FLUID_CHORUS_DEFAULT_LEVEL, 0, 10.f, 0.01f, this, tr("Chorus level")),
+	m_chorusSpeed(FLUID_CHORUS_DEFAULT_SPEED, 0.29f, 5.f, 0.01f, this, tr("Chorus speed")),
+	m_chorusDepth(FLUID_CHORUS_DEFAULT_DEPTH, 0, 46.f, 0.05f, this, tr("Chorus depth"))
 {
 
 
@@ -375,31 +369,12 @@ void Sf2Instrument::freeFont()
 {
 	m_synthMutex.lock();
 
-	if ( m_font != nullptr )
+	if (m_font != nullptr)
 	{
-		s_fontsMutex.lock();
-		--(m_font->refCount);
-
-		// No more references
-		if( m_font->refCount <= 0 )
-		{
-			qDebug() << "Really deleting " << m_filename;
-
-			fluid_synth_sfunload( m_synth, m_fontId, true );
-			s_fonts.remove( m_filename );
-			delete m_font;
-		}
-		// Just remove our reference
-		else
-		{
-			qDebug() << "un-referencing " << m_filename;
-
-			fluid_synth_remove_sfont( m_synth, m_font->fluidFont );
-		}
-		s_fontsMutex.unlock();
-
+		fluid_synth_sfunload(m_synth, m_fontId, true);
 		m_font = nullptr;
 	}
+
 	m_synthMutex.unlock();
 }
 
@@ -413,49 +388,29 @@ void Sf2Instrument::openFile( const QString & _sf2File, bool updateTrackName )
 	char * sf2Ascii = qstrdup( qPrintable( PathUtil::toAbsolute( _sf2File ) ) );
 	QString relativePath = PathUtil::toShortestRelative( _sf2File );
 
-	// free reference to soundfont if one is selected
+	// free the soundfont if one is selected
 	freeFont();
 
 	m_synthMutex.lock();
-	s_fontsMutex.lock();
 
-	// Increment Reference
-	if( s_fonts.contains( relativePath ) )
+	bool loaded = false;
+	if (fluid_is_soundfont(sf2Ascii))
 	{
-		qDebug() << "Using existing reference to " << relativePath;
+		m_fontId = fluid_synth_sfload(m_synth, sf2Ascii, true);
 
-		m_font = s_fonts[ relativePath ];
-
-		m_font->refCount++;
-
-		m_fontId = fluid_synth_add_sfont( m_synth, m_font->fluidFont );
-	}
-
-	// Add to map, if doesn't exist.
-	else
-	{
-		bool loaded = false;
-		if( fluid_is_soundfont( sf2Ascii ) )
+		if (fluid_synth_sfcount(m_synth) > 0)
 		{
-			m_fontId = fluid_synth_sfload( m_synth, sf2Ascii, true );
-
-			if( fluid_synth_sfcount( m_synth ) > 0 )
-			{
-				// Grab this sf from the top of the stack and add to list
-				m_font = new Sf2Font( fluid_synth_get_sfont( m_synth, 0 ) );
-				s_fonts.insert( relativePath, m_font );
-				loaded = true;
-			}
-		}
-
-		if(!loaded)
-		{
-			collectErrorForUI( Sf2Instrument::tr( "A soundfont %1 could not be loaded." ).
-				arg( QFileInfo( _sf2File ).baseName() ) );
+			// Grab this sf from the top of the stack and add to list
+			m_font = fluid_synth_get_sfont(m_synth, 0);
+			loaded = true;
 		}
 	}
 
-	s_fontsMutex.unlock();
+	if (!loaded)
+	{
+		collectErrorForUI(Sf2Instrument::tr("A soundfont %1 could not be loaded.").arg(QFileInfo(_sf2File).baseName()));
+	}
+
 	m_synthMutex.unlock();
 
 	if( m_fontId >= 0 )
@@ -544,50 +499,64 @@ void Sf2Instrument::updateGain()
 	fluid_synth_set_gain( m_synth, m_gain.value() );
 }
 
-
-
+#define FLUIDSYNTH_VERSION_HEX ((FLUIDSYNTH_VERSION_MAJOR << 16) \
+	| (FLUIDSYNTH_VERSION_MINOR << 8) \
+	| FLUIDSYNTH_VERSION_MICRO)
+#define USE_NEW_EFFECT_API (FLUIDSYNTH_VERSION_HEX >= 0x020200)
 
 void Sf2Instrument::updateReverbOn()
 {
-	fluid_synth_set_reverb_on( m_synth, m_reverbOn.value() ? 1 : 0 );
+#if USE_NEW_EFFECT_API
+	fluid_synth_reverb_on(m_synth, -1, m_reverbOn.value() ? 1 : 0);
+#else
+	fluid_synth_set_reverb_on(m_synth, m_reverbOn.value() ? 1 : 0);
+#endif
 }
-
-
-
 
 void Sf2Instrument::updateReverb()
 {
-	fluid_synth_set_reverb( m_synth, m_reverbRoomSize.value(),
+#if USE_NEW_EFFECT_API
+	fluid_synth_set_reverb_group_roomsize(m_synth, -1, m_reverbRoomSize.value());
+	fluid_synth_set_reverb_group_damp(m_synth, -1, m_reverbDamping.value());
+	fluid_synth_set_reverb_group_width(m_synth, -1, m_reverbWidth.value());
+	fluid_synth_set_reverb_group_level(m_synth, -1, m_reverbLevel.value());
+#else
+	fluid_synth_set_reverb(m_synth, m_reverbRoomSize.value(),
 			m_reverbDamping.value(), m_reverbWidth.value(),
-			m_reverbLevel.value() );
+			m_reverbLevel.value());
+#endif
 }
 
-
-
-
-void  Sf2Instrument::updateChorusOn()
+void Sf2Instrument::updateChorusOn()
 {
-	fluid_synth_set_chorus_on( m_synth, m_chorusOn.value() ? 1 : 0 );
+#if USE_NEW_EFFECT_API
+	fluid_synth_chorus_on(m_synth, -1, m_chorusOn.value() ? 1 : 0);
+#else
+	fluid_synth_set_chorus_on(m_synth, m_chorusOn.value() ? 1 : 0);
+#endif
 }
 
-
-
-
-void  Sf2Instrument::updateChorus()
+void Sf2Instrument::updateChorus()
 {
-	fluid_synth_set_chorus( m_synth, static_cast<int>( m_chorusNum.value() ),
+#if USE_NEW_EFFECT_API
+	fluid_synth_set_chorus_group_nr(m_synth, -1, static_cast<int>(m_chorusNum.value()));
+	fluid_synth_set_chorus_group_level(m_synth, -1, m_chorusLevel.value());
+	fluid_synth_set_chorus_group_speed(m_synth, -1, m_chorusSpeed.value());
+	fluid_synth_set_chorus_group_depth(m_synth, -1, m_chorusDepth.value());
+	fluid_synth_set_chorus_group_type(m_synth, -1, FLUID_CHORUS_MOD_SINE);
+#else
+	fluid_synth_set_chorus(m_synth, static_cast<int>(m_chorusNum.value()),
 			m_chorusLevel.value(), m_chorusSpeed.value(),
-			m_chorusDepth.value(), 0 );
+			m_chorusDepth.value(), FLUID_CHORUS_MOD_SINE);
+#endif
 }
-
-
 
 void Sf2Instrument::updateTuning()
 {
 	if (instrumentTrack()->microtuner()->enabledModel()->value())
 	{
 		auto centArray = std::array<double, 128>{};
-		double lowestHz = pow(2., -69. / 12.) * 440.;// Frequency of MIDI note 0, which is approximately 8.175798916 Hz
+		double lowestHz = std::exp2(-69. / 12.) * 440.; // Frequency of MIDI note 0, which is approximately 8.175798916 Hz
 		for (int i = 0; i < 128; ++i)
 		{
 			// Get desired Hz of note
@@ -619,7 +588,7 @@ void Sf2Instrument::reloadSynth()
 	double tempRate;
 
 	// Set & get, returns the true sample rate
-	fluid_settings_setnum( m_settings, (char *) "synth.sample-rate", Engine::audioEngine()->processingSampleRate() );
+	fluid_settings_setnum( m_settings, (char *) "synth.sample-rate", Engine::audioEngine()->outputSampleRate() );
 	fluid_settings_getnum( m_settings, (char *) "synth.sample-rate", &tempRate );
 	m_internalSampleRate = static_cast<int>( tempRate );
 
@@ -627,12 +596,12 @@ void Sf2Instrument::reloadSynth()
 	{
 		// Now, delete the old one and replace
 		m_synthMutex.lock();
-		fluid_synth_remove_sfont( m_synth, m_font->fluidFont );
+		fluid_synth_remove_sfont( m_synth, m_font );
 		delete_fluid_synth( m_synth );
 
 		// New synth
 		m_synth = new_fluid_synth( m_settings );
-		m_fontId = fluid_synth_add_sfont( m_synth, m_font->fluidFont );
+		m_fontId = fluid_synth_add_sfont( m_synth, m_font );
 		m_synthMutex.unlock();
 
 		// synth program change (set bank and patch)
@@ -661,7 +630,7 @@ void Sf2Instrument::reloadSynth()
 		fluid_synth_set_interp_method( m_synth, -1, FLUID_INTERP_DEFAULT );
 	}
 	m_synthMutex.unlock();
-	if( m_internalSampleRate < Engine::audioEngine()->processingSampleRate() )
+	if( m_internalSampleRate < Engine::audioEngine()->outputSampleRate() )
 	{
 		m_synthMutex.lock();
 		if( m_srcState != nullptr )
@@ -692,7 +661,7 @@ void Sf2Instrument::reloadSynth()
 
 
 
-void Sf2Instrument::playNote( NotePlayHandle * _n, sampleFrame * )
+void Sf2Instrument::playNote( NotePlayHandle * _n, SampleFrame* )
 {
 	if( _n->isMasterNote() || ( _n->hasParent() && _n->isReleased() ) )
 	{
@@ -827,7 +796,7 @@ void Sf2Instrument::noteOff( Sf2PluginData * n )
 }
 
 
-void Sf2Instrument::play( sampleFrame * _working_buffer )
+void Sf2Instrument::play( SampleFrame* _working_buffer )
 {
 	const fpp_t frames = Engine::audioEngine()->framesPerPeriod();
 
@@ -913,18 +882,18 @@ void Sf2Instrument::play( sampleFrame * _working_buffer )
 }
 
 
-void Sf2Instrument::renderFrames( f_cnt_t frames, sampleFrame * buf )
+void Sf2Instrument::renderFrames( f_cnt_t frames, SampleFrame* buf )
 {
 	m_synthMutex.lock();
 	fluid_synth_get_gain(m_synth); // This flushes voice updates as a side effect
-	if( m_internalSampleRate < Engine::audioEngine()->processingSampleRate() &&
+	if( m_internalSampleRate < Engine::audioEngine()->outputSampleRate() &&
 							m_srcState != nullptr )
 	{
-		const fpp_t f = frames * m_internalSampleRate / Engine::audioEngine()->processingSampleRate();
+		const fpp_t f = frames * m_internalSampleRate / Engine::audioEngine()->outputSampleRate();
 #ifdef __GNUC__
-		sampleFrame tmp[f];
+		SampleFrame tmp[f];
 #else
-		sampleFrame * tmp = new sampleFrame[f];
+		SampleFrame* tmp = new SampleFrame[f];
 #endif
 		fluid_synth_write_float( m_synth, f, tmp, 0, 2, tmp, 1, 2 );
 
@@ -943,9 +912,9 @@ void Sf2Instrument::renderFrames( f_cnt_t frames, sampleFrame * buf )
 		{
 			qCritical( "Sf2Instrument: error while resampling: %s", src_strerror( error ) );
 		}
-		if( src_data.output_frames_gen > frames )
+		if (static_cast<f_cnt_t>(src_data.output_frames_gen) < frames)
 		{
-			qCritical( "Sf2Instrument: not enough frames: %ld / %d", src_data.output_frames_gen, frames );
+			qCritical("Sf2Instrument: not enough frames: %ld / %zu", src_data.output_frames_gen, frames);
 		}
 	}
 	else

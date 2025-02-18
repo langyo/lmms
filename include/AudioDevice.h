@@ -37,6 +37,7 @@ namespace lmms
 
 class AudioEngine;
 class AudioPort;
+class SampleFrame;
 
 
 class AudioDevice
@@ -64,7 +65,6 @@ public:
 	virtual void unregisterPort( AudioPort * _port );
 	virtual void renamePort( AudioPort * _port );
 
-
 	inline bool supportsCapture() const
 	{
 		return m_supportsCapture;
@@ -73,11 +73,6 @@ public:
 	inline sample_rate_t sampleRate() const
 	{
 		return m_sampleRate;
-	}
-
-	ch_cnt_t channels() const
-	{
-		return m_channels;
 	}
 
 	void processNextBuffer();
@@ -89,27 +84,18 @@ public:
 
 	virtual void stopProcessing();
 
-	virtual void applyQualitySettings();
-
-
-
 protected:
 	// subclasses can re-implement this for being used in conjunction with
 	// processNextBuffer()
-	virtual void writeBuffer( const surroundSampleFrame * /* _buf*/,
-						const fpp_t /*_frames*/,
-						const float /*_master_gain*/ )
-	{
-	}
+	virtual void writeBuffer(const SampleFrame* /* _buf*/, const fpp_t /*_frames*/) {}
 
 	// called by according driver for fetching new sound-data
-	fpp_t getNextBuffer( surroundSampleFrame * _ab );
+	fpp_t getNextBuffer(SampleFrame* _ab);
 
 	// convert a given audio-buffer to a buffer in signed 16-bit samples
 	// returns num of bytes in outbuf
-	int convertToS16( const surroundSampleFrame * _ab,
+	int convertToS16(const SampleFrame* _ab,
 						const fpp_t _frames,
-						const float _master_gain,
 						int_sample_t * _output_buffer,
 						const bool _convert_endian = false );
 
@@ -117,12 +103,10 @@ protected:
 	void clearS16Buffer( int_sample_t * _outbuf,
 							const fpp_t _frames );
 
-	// resample given buffer from samplerate _src_sr to samplerate _dst_sr
-	fpp_t resample( const surroundSampleFrame * _src,
-					const fpp_t _frames,
-					surroundSampleFrame * _dst,
-					const sample_rate_t _src_sr,
-					const sample_rate_t _dst_sr );
+	ch_cnt_t channels() const
+	{
+		return m_channels;
+	}
 
 	inline void setSampleRate( const sample_rate_t _new_sr )
 	{
@@ -133,8 +117,6 @@ protected:
 	{
 		return m_audioEngine;
 	}
-
-	bool hqAudio() const;
 
 	static void stopProcessingThread( QThread * thread );
 
@@ -151,10 +133,7 @@ private:
 
 	QMutex m_devMutex;
 
-	SRC_DATA m_srcData;
-	SRC_STATE * m_srcState;
-
-	surroundSampleFrame * m_buffer;
+	SampleFrame* m_buffer;
 
 };
 

@@ -37,11 +37,11 @@
 #include "AudioEngine.h"
 #include "ConfigManager.h"
 #include "Engine.h"
-#include "gui_templates.h"
 #include "GuiApplication.h"
 #include "InstrumentTrack.h"
 
 #include "embed.h"
+#include "lmms_math.h"
 #include "plugin_export.h"
 
 namespace lmms
@@ -85,7 +85,7 @@ MalletsInstrument::MalletsInstrument( InstrumentTrack * _instrument_track ):
 //	TODO: m_vibratoModel
 	m_velocityModel(64.0f, 0.1f, 128.0f, 0.1f, this, tr( "Speed" )),
 	m_strikeModel( true, this, tr( "Bowed" ) ),
-	m_presetsModel(this),
+	m_presetsModel(this, tr("Instrument")),
 	m_spreadModel(0, 0, 255, 1, this, tr( "Spread" )),
 	m_randomModel(0.0f, 0.0f, 1.0f, 0.01f, this, tr("Randomness")),
 	m_versionModel( MALLETS_PRESET_VERSION, 0, MALLETS_PRESET_VERSION, this, "" ),
@@ -115,7 +115,7 @@ MalletsInstrument::MalletsInstrument( InstrumentTrack * _instrument_track ):
 	
 	// TubeBell
 	m_presetsModel.addItem( tr( "Tubular bells" ) );
-	m_scalers.append( 1.8 );
+	m_scalers.append(1.8f);
 	
 	// BandedWG
 	m_presetsModel.addItem( tr( "Uniform bar" ) );
@@ -279,7 +279,7 @@ QString MalletsInstrument::nodeName() const
 
 
 void MalletsInstrument::playNote( NotePlayHandle * _n,
-						sampleFrame * _working_buffer )
+						SampleFrame* _working_buffer )
 {
 	if( m_filesMissing )
 	{
@@ -306,26 +306,26 @@ void MalletsInstrument::playNote( NotePlayHandle * _n,
 
 		if (p < 9)
 		{
-			hardness += random * (static_cast<float>(fast_rand() % 128) - 64.0);
+			hardness += random * fastRand(-64.f, +64.f);
 			hardness = std::clamp(hardness, 0.0f, 128.0f);
 
-			position += random * (static_cast<float>(fast_rand() % 64) - 32.0);
+			position += random * fastRand(-32.f, +32.f);
 			position = std::clamp(position, 0.0f, 64.0f);
 		}
 		else if (p == 9)
 		{
-			modulator += random * (static_cast<float>(fast_rand() % 128) - 64.0);
+			modulator += random * fastRand(-64.f, +64.f);
 			modulator = std::clamp(modulator, 0.0f, 128.0f);
 
-			crossfade += random * (static_cast<float>(fast_rand() % 128) - 64.0);
+			crossfade += random * fastRand(-64.f, +64.f);
 			crossfade = std::clamp(crossfade, 0.0f, 128.0f);
 		}
 		else
 		{
-			pressure += random * (static_cast<float>(fast_rand() % 128) - 64.0);
+			pressure += random * fastRand(-64.f, +64.f);
 			pressure = std::clamp(pressure, 0.0f, 128.0f);
 
-			speed += random * (static_cast<float>(fast_rand() % 128) - 64.0);
+			speed += random * fastRand(-64.f, +64.f);
 			speed = std::clamp(speed, 0.0f, 128.0f);
 		}
 
@@ -343,7 +343,7 @@ void MalletsInstrument::playNote( NotePlayHandle * _n,
 						m_vibratoFreqModel.value(),
 						p,
 						(uint8_t) m_spreadModel.value(),
-				Engine::audioEngine()->processingSampleRate() );
+				Engine::audioEngine()->outputSampleRate() );
 		}
 		else if( p == 9 )
 		{
@@ -356,7 +356,7 @@ void MalletsInstrument::playNote( NotePlayHandle * _n,
 						m_lfoSpeedModel.value(),
 						m_adsrModel.value(),
 						(uint8_t) m_spreadModel.value(),
-				Engine::audioEngine()->processingSampleRate() );
+				Engine::audioEngine()->outputSampleRate() );
 		}
 		else
 		{
@@ -369,7 +369,7 @@ void MalletsInstrument::playNote( NotePlayHandle * _n,
 						m_strikeModel.value() * 128.0,
 						speed,
 						(uint8_t) m_spreadModel.value(),
-				Engine::audioEngine()->processingSampleRate() );
+				Engine::audioEngine()->outputSampleRate() );
 		}
 		m.unlock();
 		static_cast<MalletsSynth *>(_n->m_pluginData)->setPresetIndex(p);
@@ -450,7 +450,6 @@ MalletsInstrumentView::MalletsInstrumentView( MalletsInstrument * _instrument,
 
 	m_presetsCombo = new ComboBox( this, tr( "Instrument" ) );
 	m_presetsCombo->setGeometry( 140, 50, 99, ComboBox::DEFAULT_HEIGHT );
-	m_presetsCombo->setFont( pointSize<8>( m_presetsCombo->font() ) );
 	
 	connect( &_instrument->m_presetsModel, SIGNAL( dataChanged() ),
 		 this, SLOT( changePreset() ) );

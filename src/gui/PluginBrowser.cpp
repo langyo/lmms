@@ -62,15 +62,16 @@ PluginBrowser::PluginBrowser( QWidget * _parent ) :
 
 	auto hint = new QLabel( tr( "Drag an instrument "
 					"into either the Song Editor, the "
-					"Pattern Editor or into an "
+					"Pattern Editor or an "
 					"existing instrument track." ),
 								m_view );
 	hint->setWordWrap( true );
 
 	auto searchBar = new QLineEdit(m_view);
-	searchBar->setPlaceholderText( "Search" );
-	searchBar->setMaxLength( 64 );
-	searchBar->setClearButtonEnabled( true );
+	searchBar->setPlaceholderText(tr("Search"));
+	searchBar->setMaxLength(64);
+	searchBar->setClearButtonEnabled(true);
+	searchBar->addAction(embed::getIconPixmap("zoom"), QLineEdit::LeadingPosition);
 
 	m_descTree = new QTreeWidget( m_view );
 	m_descTree->setColumnCount( 1 );
@@ -281,9 +282,9 @@ void PluginDescWidget::leaveEvent( QEvent * _e )
 
 void PluginDescWidget::mousePressEvent( QMouseEvent * _me )
 {
+	Engine::setDndPluginKey(&m_pluginKey);
 	if ( _me->button() == Qt::LeftButton )
 	{
-		Engine::setDndPluginKey(&m_pluginKey);
 		new StringPairDrag("instrument",
 			QString::fromUtf8(m_pluginKey.desc->name), m_logo, this);
 		leaveEvent( _me );
@@ -296,7 +297,7 @@ void PluginDescWidget::contextMenuEvent(QContextMenuEvent* e)
 	QMenu contextMenu(this);
 	contextMenu.addAction(
 		tr("Send to new instrument track"),
-		[=]{ openInNewInstrumentTrack(m_pluginKey.desc->name); }
+		[=, this]{ openInNewInstrumentTrack(m_pluginKey.desc->name); }
 	);
 	contextMenu.exec(e->globalPos());
 }

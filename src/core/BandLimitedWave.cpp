@@ -49,11 +49,11 @@ QDataStream& operator<< ( QDataStream &out, WaveMipMap &waveMipMap )
 
 QDataStream& operator>> ( QDataStream &in, WaveMipMap &waveMipMap )
 {
-	sample_t sample;
 	for( int tbl = 0; tbl <= MAXTBL; tbl++ )
 	{
 		for( int i = 0; i < TLENS[tbl]; i++ )
 		{
+			sample_t sample;
 			in >> sample;
 			waveMipMap.setSampleAt( tbl, i, sample );
 		}
@@ -64,12 +64,12 @@ QDataStream& operator>> ( QDataStream &in, WaveMipMap &waveMipMap )
 
 void BandLimitedWave::generateWaves()
 {
+	using namespace std::numbers;
 // don't generate if they already exist
 	if( s_wavesGenerated ) return;
 
-	int i;
 
-// set wavetable directory
+	// set wavetable directory
 	s_wavetableDir = "data:wavetables/";
 
 // set wavetable files
@@ -89,7 +89,7 @@ void BandLimitedWave::generateWaves()
 	}
 	else
 	{
-		for( i = 0; i <= MAXTBL; i++ )
+		for (int i = 0; i <= MAXTBL; i++)
 		{
 			const int len = TLENS[i];
 			//const double om = 1.0 / len;
@@ -104,8 +104,8 @@ void BandLimitedWave::generateWaves()
 				{
 					hlen = static_cast<double>( len ) / static_cast<double>( harm );
 					const double amp = -1.0 / static_cast<double>( harm );
-					//const double a2 = cos( om * harm * F_2PI );
-					s += amp * /*a2 **/sin( static_cast<double>( ph * harm ) / static_cast<double>( len ) * F_2PI );
+					//const double a2 = std::cos(om * harm * 2 * pi_v<float>);
+					s += amp * /*a2 **/ std::sin(static_cast<double>(ph * harm) / static_cast<double>(len) * 2 * pi_v<float>);
 					harm++;
 				} while( hlen > 2.0 );
 				s_waveforms[static_cast<std::size_t>(BandLimitedWave::Waveform::BLSaw)].setSampleAt( i, ph, s );
@@ -131,7 +131,7 @@ void BandLimitedWave::generateWaves()
 	}
 	else
 	{
-		for( i = 0; i <= MAXTBL; i++ )
+		for (int i = 0; i <= MAXTBL; i++)
 		{
 			const int len = TLENS[i];
 			//const double om = 1.0 / len;
@@ -146,8 +146,8 @@ void BandLimitedWave::generateWaves()
 				{
 					hlen = static_cast<double>( len ) / static_cast<double>( harm );
 					const double amp = 1.0 / static_cast<double>( harm );
-					//const double a2 = cos( om * harm * F_2PI );
-					s += amp * /*a2 **/ sin( static_cast<double>( ph * harm ) / static_cast<double>( len ) * F_2PI );
+					//const double a2 = std::cos(om * harm * 2 * pi_v<float>);
+					s += amp * /*a2 **/ std::sin(static_cast<double>(ph * harm) / static_cast<double>(len) * 2 * pi_v<float>);
 					harm += 2;
 				} while( hlen > 2.0 );
 				s_waveforms[static_cast<std::size_t>(BandLimitedWave::Waveform::BLSquare)].setSampleAt( i, ph, s );
@@ -172,7 +172,7 @@ void BandLimitedWave::generateWaves()
 	}
 	else
 	{
-		for( i = 0; i <= MAXTBL; i++ )
+		for (int i = 0; i <= MAXTBL; i++)
 		{
 			const int len = TLENS[i];
 			//const double om = 1.0 / len;
@@ -187,9 +187,9 @@ void BandLimitedWave::generateWaves()
 				{
 					hlen = static_cast<double>( len ) / static_cast<double>( harm );
 					const double amp = 1.0 / static_cast<double>( harm * harm );
-					//const double a2 = cos( om * harm * F_2PI );
-					s += amp * /*a2 **/ sin( ( static_cast<double>( ph * harm ) / static_cast<double>( len ) +
-							( ( harm + 1 ) % 4 == 0 ? 0.5 : 0.0 ) ) * F_2PI );
+					//const double a2 = std::cos(om * harm * 2 * pi_v<float>);
+					s += amp * /*a2 **/ std::sin((static_cast<double>(ph * harm) / static_cast<double>(len) +
+							((harm + 1) % 4 == 0 ? 0.5 : 0.0)) * 2 * pi_v<float>);
 					harm += 2;
 				} while( hlen > 2.0 );
 				s_waveforms[static_cast<std::size_t>(BandLimitedWave::Waveform::BLTriangle)].setSampleAt( i, ph, s );
@@ -215,7 +215,7 @@ void BandLimitedWave::generateWaves()
 	}
 	else
 	{
-		for( i = 0; i <= MAXTBL; i++ )
+		for (int i = 0; i <= MAXTBL; i++)
 		{
 			const int len = TLENS[i];
 

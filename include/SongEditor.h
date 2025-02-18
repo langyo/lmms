@@ -97,8 +97,6 @@ protected:
 	void mouseReleaseEvent(QMouseEvent * me) override;
 
 private slots:
-	void setHighQuality( bool );
-
 	void setMasterVolume( int new_val );
 	void showMasterVolumeFloat();
 	void updateMasterVolumeFloat( int new_val );
@@ -129,6 +127,8 @@ private:
 	Song * m_song;
 
 	QScrollBar * m_leftRightScroll;
+
+	void adjustLeftRightScoll(int value);
 
 	LcdSpinBox * m_tempoSpinBox;
 
@@ -166,6 +166,7 @@ private:
 
 signals:
 	void pixelsPerBarChanged(float);
+	void proportionalSnapChanged();
 } ;
 
 

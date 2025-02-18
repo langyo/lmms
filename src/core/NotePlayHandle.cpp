@@ -26,12 +26,12 @@
 #include "NotePlayHandle.h"
 
 #include "AudioEngine.h"
-#include "BasicFilters.h"
 #include "DetuningHelper.h"
 #include "InstrumentSoundShaping.h"
 #include "InstrumentTrack.h"
 #include "Instrument.h"
 #include "Song.h"
+#include "lmms_math.h"
 
 namespace lmms
 {
@@ -53,7 +53,7 @@ NotePlayHandle::NotePlayHandle( InstrumentTrack* instrumentTrack,
 								NotePlayHandle *parent,
 								int midiEventChannel,
 								Origin origin ) :
-	PlayHandle( Type::NotePlayHandle, _offset ),
+	PlayHandle( PlayHandle::Type::NotePlayHandle, _offset ),
 	Note( n.length(), n.pos(), n.key(), n.getVolume(), n.getPanning(), n.detuning() ),
 	m_pluginData( nullptr ),
 	m_instrumentTrack( instrumentTrack ),
@@ -109,7 +109,7 @@ NotePlayHandle::NotePlayHandle( InstrumentTrack* instrumentTrack,
 		m_instrumentTrack->midiNoteOn( *this );
 	}
 
-	if(m_instrumentTrack->instrument() && m_instrumentTrack->instrument()->flags() & Instrument::Flag::IsSingleStreamed )
+	if (m_instrumentTrack->instrument() && m_instrumentTrack->instrument()->isSingleStreamed())
 	{
 		setUsesBuffer( false );
 	}
@@ -183,7 +183,7 @@ int NotePlayHandle::midiKey() const
 
 
 
-void NotePlayHandle::play( sampleFrame * _working_buffer )
+void NotePlayHandle::play( SampleFrame* _working_buffer )
 {
 	if (m_muted)
 	{
@@ -532,8 +532,8 @@ void NotePlayHandle::updateFrequency()
 		if (m_instrumentTrack->isKeyMapped(transposedKey))
 		{
 			const auto frequency = m_instrumentTrack->m_microtuner.keyToFreq(transposedKey, baseNote);
-			m_frequency = frequency * powf(2.f, (detune + instrumentPitch / 100) / 12.f);
-			m_unpitchedFrequency = frequency * powf(2.f, detune / 12.f);
+			m_frequency = frequency * std::exp2((detune + instrumentPitch / 100) / 12.f);
+			m_unpitchedFrequency = frequency * std::exp2(detune / 12.f);
 		}
 		else
 		{
@@ -544,8 +544,8 @@ void NotePlayHandle::updateFrequency()
 	{
 		// default key mapping and 12-TET frequency computation with default 440 Hz base note frequency
 		const float pitch = (key() - baseNote + masterPitch + detune) / 12.0f;
-		m_frequency = DefaultBaseFreq * powf(2.0f, pitch + instrumentPitch / (100 * 12.0f));
-		m_unpitchedFrequency = DefaultBaseFreq * powf(2.0f, pitch);
+		m_frequency = DefaultBaseFreq * std::exp2(pitch + instrumentPitch / (100 * 12.0f));
+		m_unpitchedFrequency = DefaultBaseFreq * std::exp2(pitch);
 	}
 
 	for (auto it : m_subNotes)
@@ -568,7 +568,7 @@ void NotePlayHandle::processTimePos(const TimePos& time, float pitchValue, bool 
 	else
 	{
 		const float v = detuning()->automationClip()->valueAt(time - songGlobalParentOffset() - pos());
-		if (!typeInfo<float>::isEqual(v, m_baseDetuning->value()))
+		if (!approximatelyEqual(v, m_baseDetuning->value()))
 		{
 			m_baseDetuning->setValue(v);
 			updateFrequency();
@@ -610,9 +610,9 @@ int NotePlayHandleManager::s_size;
 
 void NotePlayHandleManager::init()
 {
-	s_available = MM_ALLOC<NotePlayHandle*>( INITIAL_NPH_CACHE );
+	s_available = new NotePlayHandle*[INITIAL_NPH_CACHE];
 
-	auto n = MM_ALLOC<NotePlayHandle>(INITIAL_NPH_CACHE);
+	auto n = static_cast<NotePlayHandle *>(std::malloc(sizeof(NotePlayHandle) * INITIAL_NPH_CACHE));
 
 	for( int i=0; i < INITIAL_NPH_CACHE; ++i )
 	{
@@ -655,11 +655,11 @@ void NotePlayHandleManager::release( NotePlayHandle * nph )
 void NotePlayHandleManager::extend( int c )
 {
 	s_size += c;
-	auto tmp = MM_ALLOC<NotePlayHandle*>(s_size);
-	MM_FREE( s_available );
+	auto tmp = new NotePlayHandle*[s_size];
+	delete[] s_available;
 	s_available = tmp;
 
-	auto n = MM_ALLOC<NotePlayHandle>(c);
+	auto n = static_cast<NotePlayHandle *>(std::malloc(sizeof(NotePlayHandle) * c));
 
 	for( int i=0; i < c; ++i )
 	{
@@ -670,7 +670,7 @@ void NotePlayHandleManager::extend( int c )
 
 void NotePlayHandleManager::free()
 {
-	MM_FREE(s_available);
+	delete[] s_available;
 }
 
 

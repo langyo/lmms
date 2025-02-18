@@ -24,6 +24,7 @@
 
 #include "AudioEngine.h"
 
+#include "MixHelpers.h"
 #include "denormals.h"
 
 #include "lmmsconfig.h"
@@ -36,7 +37,6 @@
 #include "NotePlayHandle.h"
 #include "ConfigManager.h"
 #include "SamplePlayHandle.h"
-#include "MemoryHelper.h"
 
 // platform-specific audio-interface-classes
 #include "AudioAlsa.h"
@@ -66,7 +66,7 @@ namespace lmms
 
 using LocklessListElement = LocklessList<PlayHandle*>::Element;
 
-static thread_local bool s_renderingThread;
+static thread_local bool s_renderingThread = false;
 
 
 
@@ -74,6 +74,7 @@ static thread_local bool s_renderingThread;
 AudioEngine::AudioEngine( bool renderOnly ) :
 	m_renderOnly( renderOnly ),
 	m_framesPerPeriod( DEFAULT_BUFFER_SIZE ),
+	m_baseSampleRate(std::max(ConfigManager::inst()->value("audioengine", "samplerate").toInt(), 44100)),
 	m_inputBufferRead( 0 ),
 	m_inputBufferWrite( 1 ),
 	m_outputBufferRead(nullptr),
@@ -81,28 +82,20 @@ AudioEngine::AudioEngine( bool renderOnly ) :
 	m_workers(),
 	m_numWorkers( QThread::idealThreadCount()-1 ),
 	m_newPlayHandles( PlayHandle::MaxNumber ),
-	m_qualitySettings( qualitySettings::Mode::Draft ),
+	m_qualitySettings(qualitySettings::Interpolation::Linear),
 	m_masterGain( 1.0f ),
-	m_isProcessing( false ),
 	m_audioDev( nullptr ),
 	m_oldAudioDev( nullptr ),
 	m_audioDevStartFailed( false ),
 	m_profiler(),
-	m_metronomeActive(false),
-	m_clearSignal( false ),
-	m_changesSignal( false ),
-	m_changes( 0 ),
-#if (QT_VERSION < QT_VERSION_CHECK(5,14,0))
-	m_doChangesMutex( QMutex::Recursive ),
-#endif
-	m_waitingForWrite( false )
+	m_clearSignal(false)
 {
 	for( int i = 0; i < 2; ++i )
 	{
 		m_inputBufferFrames[i] = 0;
 		m_inputBufferSize[i] = DEFAULT_BUFFER_SIZE * 100;
-		m_inputBuffer[i] = new sampleFrame[ DEFAULT_BUFFER_SIZE * 100 ];
-		BufferManager::clear( m_inputBuffer[i], m_inputBufferSize[i] );
+		m_inputBuffer[i] = new SampleFrame[ DEFAULT_BUFFER_SIZE * 100 ];
+		zeroSampleFrames(m_inputBuffer[i], m_inputBufferSize[i]);
 	}
 
 	// determine FIFO size and number of frames per period
@@ -142,12 +135,9 @@ AudioEngine::AudioEngine( bool renderOnly ) :
 	// now that framesPerPeriod is fixed initialize global BufferManager
 	BufferManager::init( m_framesPerPeriod );
 
-	int outputBufferSize = m_framesPerPeriod * sizeof(surroundSampleFrame);
-	m_outputBufferRead = static_cast<surroundSampleFrame *>(MemoryHelper::alignedMalloc(outputBufferSize));
-	m_outputBufferWrite = static_cast<surroundSampleFrame *>(MemoryHelper::alignedMalloc(outputBufferSize));
+	m_outputBufferRead = std::make_unique<SampleFrame[]>(m_framesPerPeriod);
+	m_outputBufferWrite = std::make_unique<SampleFrame[]>(m_framesPerPeriod);
 
-	BufferManager::clear(m_outputBufferRead, m_framesPerPeriod);
-	BufferManager::clear(m_outputBufferWrite, m_framesPerPeriod);
 
 	for( int i = 0; i < m_numWorkers+1; ++i )
 	{
@@ -165,8 +155,6 @@ AudioEngine::AudioEngine( bool renderOnly ) :
 
 AudioEngine::~AudioEngine()
 {
-	runChangesInModel();
-
 	for( int w = 0; w < m_numWorkers; ++w )
 	{
 		m_workers[w]->quit();
@@ -188,8 +176,6 @@ AudioEngine::~AudioEngine()
 	delete m_midiClient;
 	delete m_audioDev;
 
-	MemoryHelper::alignedFree(m_outputBufferRead);
-	MemoryHelper::alignedFree(m_outputBufferWrite);
 
 	for (const auto& input : m_inputBuffer)
 	{
@@ -232,8 +218,6 @@ void AudioEngine::startProcessing(bool needsFifo)
 	}
 
 	m_audioDev->startProcessing();
-
-	m_isProcessing = true;
 }
 
 
@@ -241,8 +225,6 @@ void AudioEngine::startProcessing(bool needsFifo)
 
 void AudioEngine::stopProcessing()
 {
-	m_isProcessing = false;
-
 	if( m_fifoWriter != nullptr )
 	{
 		m_fifoWriter->finish();
@@ -260,45 +242,6 @@ void AudioEngine::stopProcessing()
 
 
 
-sample_rate_t AudioEngine::baseSampleRate() const
-{
-	sample_rate_t sr = ConfigManager::inst()->value( "audioengine", "samplerate" ).toInt();
-	if( sr < 44100 )
-	{
-		sr = 44100;
-	}
-	return sr;
-}
-
-
-
-
-sample_rate_t AudioEngine::outputSampleRate() const
-{
-	return m_audioDev != nullptr ? m_audioDev->sampleRate() :
-							baseSampleRate();
-}
-
-
-
-
-sample_rate_t AudioEngine::inputSampleRate() const
-{
-	return m_audioDev != nullptr ? m_audioDev->sampleRate() :
-							baseSampleRate();
-}
-
-
-
-
-sample_rate_t AudioEngine::processingSampleRate() const
-{
-	return outputSampleRate() * m_qualitySettings.sampleRateMultiplier();
-}
-
-
-
-
 bool AudioEngine::criticalXRuns() const
 {
 	return cpuLoad() >= 99 && Engine::getSong()->isExporting() == false;
@@ -307,19 +250,19 @@ bool AudioEngine::criticalXRuns() const
 
 
 
-void AudioEngine::pushInputFrames( sampleFrame * _ab, const f_cnt_t _frames )
+void AudioEngine::pushInputFrames( SampleFrame* _ab, const f_cnt_t _frames )
 {
 	requestChangeInModel();
 
 	f_cnt_t frames = m_inputBufferFrames[ m_inputBufferWrite ];
-	int size = m_inputBufferSize[ m_inputBufferWrite ];
-	sampleFrame * buf = m_inputBuffer[ m_inputBufferWrite ];
+	auto size = m_inputBufferSize[m_inputBufferWrite];
+	SampleFrame* buf = m_inputBuffer[ m_inputBufferWrite ];
 
 	if( frames + _frames > size )
 	{
 		size = std::max(size * 2, frames + _frames);
-		auto ab = new sampleFrame[size];
-		memcpy( ab, buf, frames * sizeof( sampleFrame ) );
+		auto ab = new SampleFrame[size];
+		memcpy( ab, buf, frames * sizeof( SampleFrame ) );
 		delete [] buf;
 
 		m_inputBufferSize[ m_inputBufferWrite ] = size;
@@ -328,7 +271,7 @@ void AudioEngine::pushInputFrames( sampleFrame * _ab, const f_cnt_t _frames )
 		buf = ab;
 	}
 
-	memcpy( &buf[ frames ], _ab, _frames * sizeof( sampleFrame ) );
+	memcpy( &buf[ frames ], _ab, _frames * sizeof( SampleFrame ) );
 	m_inputBufferFrames[ m_inputBufferWrite ] += _frames;
 
 	doneChangeInModel();
@@ -373,8 +316,6 @@ void AudioEngine::renderStageNoteSetup()
 	// prepare master mix (clear internal buffers etc.)
 	Mixer * mixer = Engine::mixer();
 	mixer->prepareMasterMix();
-
-	handleMetronome();
 
 	// create play-handles for new notes, samples etc.
 	Engine::getSong()->processNextBuffer();
@@ -443,11 +384,11 @@ void AudioEngine::renderStageMix()
 	AudioEngineProfiler::Probe profilerProbe(m_profiler, AudioEngineProfiler::DetailType::Mixing);
 
 	Mixer *mixer = Engine::mixer();
-	mixer->masterMix(m_outputBufferWrite);
+	mixer->masterMix(m_outputBufferWrite.get());
 
-	emit nextAudioBuffer(m_outputBufferRead);
+	MixHelpers::multiply(m_outputBufferWrite.get(), m_masterGain, m_framesPerPeriod);
 
-	runChangesInModel();
+	emit nextAudioBuffer(m_outputBufferRead.get());
 
 	// and trigger LFOs
 	EnvelopeAndLfoParameters::instances()->trigger();
@@ -457,8 +398,10 @@ void AudioEngine::renderStageMix()
 
 
 
-const surroundSampleFrame *AudioEngine::renderNextBuffer()
+const SampleFrame* AudioEngine::renderNextBuffer()
 {
+	const auto lock = std::lock_guard{m_changeMutex};
+
 	m_profiler.startPeriod();
 	s_renderingThread = true;
 
@@ -468,9 +411,9 @@ const surroundSampleFrame *AudioEngine::renderNextBuffer()
 	renderStageMix();           // STAGE 3: do master mix in mixer
 
 	s_renderingThread = false;
-	m_profiler.finishPeriod(processingSampleRate(), m_framesPerPeriod);
+	m_profiler.finishPeriod(outputSampleRate(), m_framesPerPeriod);
 
-	return m_outputBufferRead;
+	return m_outputBufferRead.get();
 }
 
 
@@ -483,57 +426,8 @@ void AudioEngine::swapBuffers()
 	m_inputBufferFrames[m_inputBufferWrite] = 0;
 
 	std::swap(m_outputBufferRead, m_outputBufferWrite);
-	BufferManager::clear(m_outputBufferWrite, m_framesPerPeriod);
+	zeroSampleFrames(m_outputBufferWrite.get(), m_framesPerPeriod);
 }
-
-
-
-
-void AudioEngine::handleMetronome()
-{
-	static tick_t lastMetroTicks = -1;
-
-	Song * song = Engine::getSong();
-	Song::PlayMode currentPlayMode = song->playMode();
-
-	bool metronomeSupported =
-		currentPlayMode == Song::PlayMode::MidiClip
-		|| currentPlayMode == Song::PlayMode::Song
-		|| currentPlayMode == Song::PlayMode::Pattern;
-
-	if (!metronomeSupported || !m_metronomeActive || song->isExporting())
-	{
-		return;
-	}
-
-	// stop crash with metronome if empty project
-	if (song->countTracks() == 0)
-	{
-		return;
-	}
-
-	tick_t ticks = song->getPlayPos(currentPlayMode).getTicks();
-	tick_t ticksPerBar = TimePos::ticksPerBar();
-	int numerator = song->getTimeSigModel().getNumerator();
-
-	if (ticks == lastMetroTicks)
-	{
-		return;
-	}
-
-	if (ticks % (ticksPerBar / 1) == 0)
-	{
-		addPlayHandle(new SamplePlayHandle("misc/metronome02.ogg"));
-	}
-	else if (ticks % (ticksPerBar / numerator) == 0)
-	{
-		addPlayHandle(new SamplePlayHandle("misc/metronome01.ogg"));
-	}
-
-	lastMetroTicks = ticks;
-}
-
-
 
 void AudioEngine::clear()
 {
@@ -574,39 +468,12 @@ void AudioEngine::clearInternal()
 
 
 
-AudioEngine::StereoSample AudioEngine::getPeakValues(sampleFrame * ab, const f_cnt_t frames) const
-{
-	sample_t peakLeft = 0.0f;
-	sample_t peakRight = 0.0f;
-
-	for (f_cnt_t f = 0; f < frames; ++f)
-	{
-		float const absLeft = std::abs(ab[f][0]);
-		float const absRight = std::abs(ab[f][1]);
-		if (absLeft > peakLeft)
-		{
-			peakLeft = absLeft;
-		}
-
-		if (absRight > peakRight)
-		{
-			peakRight = absRight;
-		}
-	}
-
-	return StereoSample(peakLeft, peakRight);
-}
-
-
-
-
 void AudioEngine::changeQuality(const struct qualitySettings & qs)
 {
 	// don't delete the audio-device
 	stopProcessing();
 
 	m_qualitySettings = qs;
-	m_audioDev->applyQualitySettings();
 
 	emit sampleRateChanged();
 	emit qualitySettingsChanged();
@@ -811,57 +678,14 @@ void AudioEngine::removePlayHandlesOfTypes(Track * track, PlayHandle::Types type
 
 void AudioEngine::requestChangeInModel()
 {
-	if( s_renderingThread )
-		return;
-
-	m_changesMutex.lock();
-	m_changes++;
-	m_changesMutex.unlock();
-
-	m_doChangesMutex.lock();
-	m_waitChangesMutex.lock();
-	if (m_isProcessing && !m_waitingForWrite && !m_changesSignal)
-	{
-		m_changesSignal = true;
-		m_changesRequestCondition.wait( &m_waitChangesMutex );
-	}
-	m_waitChangesMutex.unlock();
+	if (s_renderingThread) { return; }
+	m_changeMutex.lock();
 }
-
-
-
 
 void AudioEngine::doneChangeInModel()
 {
-	if( s_renderingThread )
-		return;
-
-	m_changesMutex.lock();
-	bool moreChanges = --m_changes;
-	m_changesMutex.unlock();
-
-	if( !moreChanges )
-	{
-		m_changesSignal = false;
-		m_changesAudioEngineCondition.wakeOne();
-	}
-	m_doChangesMutex.unlock();
-}
-
-
-
-
-void AudioEngine::runChangesInModel()
-{
-	if( m_changesSignal )
-	{
-		m_waitChangesMutex.lock();
-		// allow changes in the model from other threads ...
-		m_changesRequestCondition.wakeOne();
-		// ... and wait until they are done
-		m_changesAudioEngineCondition.wait( &m_waitChangesMutex );
-		m_waitChangesMutex.unlock();
-	}
+	if (s_renderingThread) { return; }
+	m_changeMutex.unlock();
 }
 
 bool AudioEngine::isAudioDevNameValid(QString name)
@@ -1280,46 +1104,18 @@ void AudioEngine::fifoWriter::run()
 {
 	disable_denormals();
 
-#if 0
-#if defined(LMMS_BUILD_LINUX) || defined(LMMS_BUILD_FREEBSD)
-#ifdef LMMS_HAVE_SCHED_H
-	cpu_set_t mask;
-	CPU_ZERO( &mask );
-	CPU_SET( 0, &mask );
-	sched_setaffinity( 0, sizeof( mask ), &mask );
-#endif
-#endif
-#endif
-
 	const fpp_t frames = m_audioEngine->framesPerPeriod();
 	while( m_writing )
 	{
-		auto buffer = new surroundSampleFrame[frames];
-		const surroundSampleFrame * b = m_audioEngine->renderNextBuffer();
-		memcpy( buffer, b, frames * sizeof( surroundSampleFrame ) );
-		write( buffer );
+		auto buffer = new SampleFrame[frames];
+		const SampleFrame* b = m_audioEngine->renderNextBuffer();
+		memcpy(buffer, b, frames * sizeof(SampleFrame));
+		m_fifo->write(buffer);
 	}
 
 	// Let audio backend stop processing
-	write( nullptr );
+	m_fifo->write(nullptr);
 	m_fifo->waitUntilRead();
-}
-
-
-
-
-void AudioEngine::fifoWriter::write( surroundSampleFrame * buffer )
-{
-	m_audioEngine->m_waitChangesMutex.lock();
-	m_audioEngine->m_waitingForWrite = true;
-	m_audioEngine->m_waitChangesMutex.unlock();
-	m_audioEngine->runChangesInModel();
-
-	m_fifo->write( buffer );
-
-	m_audioEngine->m_doChangesMutex.lock();
-	m_audioEngine->m_waitingForWrite = false;
-	m_audioEngine->m_doChangesMutex.unlock();
 }
 
 } // namespace lmms

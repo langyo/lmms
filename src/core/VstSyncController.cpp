@@ -28,7 +28,6 @@
 #include <stdexcept>
 
 #include <QDebug>
-#include <QUuid>
 
 #include "AudioEngine.h"
 #include "ConfigManager.h"
@@ -44,7 +43,7 @@ VstSyncController::VstSyncController()
 {
 	try
 	{
-		m_syncData.create(QUuid::createUuid().toString().toStdString());
+		m_syncData.create();
 	}
 	catch (const std::runtime_error& error)
 	{
@@ -155,7 +154,7 @@ void VstSyncController::updateSampleRate()
 {
 	if (!m_syncData) { return; }
 
-	m_syncData->m_sampleRate = Engine::audioEngine()->processingSampleRate();
+	m_syncData->m_sampleRate = Engine::audioEngine()->outputSampleRate();
 
 #ifdef VST_SNC_LATENCY
 	m_syncData->m_latency = m_syncData->m_bufferSize * m_syncData->m_bpm / ( (float) m_syncData->m_sampleRate * 60 );
